@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose draws everything; these only set the window before the first frame, so nothing flashes. -->
+    <style name="Theme.Shiftbell" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/paper</item>
+    </style>
+
+    <style name="Theme.Shiftbell.Alarm" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/night</item>
+    </style>
+
+    <color name="paper">#FFF7F5F0</color>
+    <color name="night">#FF0B0D12</color>
+    <color name="amber">#FFF5A623</color>
+</resources>

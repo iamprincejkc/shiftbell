@@ -1,0 +1,21 @@
+# .NET
+bin/
+obj/
+.vs/
+*.user
+dist/
+TestResults/
+
+# Android (more in android/.gitignore)
+android/dist/
+
+# Local tooling
+.lavish/
+
+# Workspace-only agent notes and empty template folders; not part of the product
+PROJECT-CONTEXT.md
+docs/CONTEXT.md
+docs/deployment/
+docs/guides/
+docs/specs/
+docs/wiki/

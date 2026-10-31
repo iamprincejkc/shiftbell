@@ -1,0 +1,17 @@
+<Project>
+
+  <!-- One place for every setting that must hold across the whole solution. -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <ShiftbellVersion>0.1.0</ShiftbellVersion>
+    <Version>$(ShiftbellVersion)</Version>
+    <Company>JKC</Company>
+    <Product>Shiftbell</Product>
+  </PropertyGroup>
+
+</Project>

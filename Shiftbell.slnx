@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Shiftbell/Shiftbell.csproj" />
+    <Project Path="src/Shiftbell.Core/Shiftbell.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Shiftbell.Core.Tests/Shiftbell.Core.Tests.csproj" />
+  </Folder>
+</Solution>

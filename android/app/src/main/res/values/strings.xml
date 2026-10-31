@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Shiftbell</string>
+    <string name="channel_ringing">Ringing alarm</string>
+    <string name="channel_ringing_about">The time-in and time-out alarm while it rings. Keep this on, or the alarm cannot show.</string>
+</resources>
