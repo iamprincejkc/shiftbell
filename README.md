@@ -75,10 +75,17 @@ flowchart LR
 
 ## Getting started
 
-| Platform | Install | Details |
-|---|---|---|
-| Windows 10/11 | `powershell -ExecutionPolicy Bypass -File tools\install.ps1` | [docs/windows.md](docs/windows.md) |
-| Android 13+ | `cd android && ./gradlew :app:assembleRelease`, then install the APK | [docs/android.md](docs/android.md) |
+**Windows 10/11**, details in [docs/windows.md](docs/windows.md):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\install.ps1
+```
+
+**Android 13+**, details in [docs/android.md](docs/android.md):
+
+```bash
+cd android && ./gradlew :app:assembleRelease
+```
 
 Default schedule: time in rings 7:45 AM (due 8:00), time out rings 5:00 PM, Monday to Friday.
 Set your attendance page and pair your devices in Settings.
