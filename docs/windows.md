@@ -4,13 +4,23 @@ A tray app (.NET 10, WPF) that rings with its own full-screen window instead of 
 
 ## Install
 
+Run `Shiftbell-Setup-<version>.exe` from the [latest release](https://github.com/iamprincejkc/shiftbell/releases/latest).
+It installs per user to `%LOCALAPPDATA%\Programs\Shiftbell` (no admin), adds a Start menu shortcut, and can be uninstalled from Settings, Apps.
+On first start the app opens Settings and registers a Run key and a `Shiftbell` scheduled task; uninstalling removes both and keeps your settings.
+Silent installs work (`/VERYSILENT /SUPPRESSMSGBOXES`), and upgrading over a running copy restarts it.
+
+From source, either build the release files or install directly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build-release.ps1
+```
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\install.ps1
 ```
 
-This publishes one self-contained `Shiftbell.exe` to `%LOCALAPPDATA%\Programs\Shiftbell`, adds a Start menu shortcut and starts it.
-On first start it opens Settings and registers a Run key and a `Shiftbell` scheduled task.
-`tools\uninstall.ps1` removes all of that and keeps your settings.
+`build-release.ps1` runs both test suites and writes the installer and the APK to `dist\`; it needs [Inno Setup 6](https://jrsoftware.org/isinfo.php).
+`install.ps1` publishes and installs to the same folder without an installer; `tools\uninstall.ps1` undoes it.
 
 ## Why it does not get missed
 

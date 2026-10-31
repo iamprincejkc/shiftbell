@@ -75,17 +75,14 @@ flowchart LR
 
 ## Getting started
 
-**Windows 10/11**, details in [docs/windows.md](docs/windows.md):
+Download from the [latest release](https://github.com/iamprincejkc/shiftbell/releases/latest):
 
-```powershell
-powershell -ExecutionPolicy Bypass -File tools\install.ps1
-```
+| Platform | File | Notes |
+|---|---|---|
+| Windows 10/11 (x64) | `Shiftbell-Setup-<version>.exe` | Per-user install, no admin. Unsigned, so SmartScreen asks once: **More info, Run anyway** |
+| Android 13+ | `Shiftbell-<version>.apk` | Allow installs from your browser or file manager when asked |
 
-**Android 13+**, details in [docs/android.md](docs/android.md):
-
-```bash
-cd android && ./gradlew :app:assembleRelease
-```
+To build from source instead, see [docs/windows.md](docs/windows.md) and [docs/android.md](docs/android.md).
 
 Default schedule: time in rings 7:45 AM (due 8:00), time out rings 5:00 PM, Monday to Friday.
 Set your attendance page and pair your devices in Settings.
