@@ -105,7 +105,7 @@ class AlarmActivity : ComponentActivity() {
                         RingService.stepAside(this)
                         finish()
                     },
-                    onOpenAttendance = { openAttendance(current.settings.attendanceLink) },
+                    onOpenAttendance = { openAttendance(current.alarm.alarm.link) },
                 )
             }
         }
@@ -157,12 +157,12 @@ internal fun AlarmScreen(
             value = clock()
         }
     }
-    val copy = AlarmCopy.of(session.alarm, session.settings, now)
+    val copy = AlarmCopy.of(session.alarm, now)
     val accent = Palette.accent(copy.tone)
-    val hasLink = session.settings.attendanceLink.isNotEmpty()
-    val requireTyping = session.settings.requireTypedConfirmation
+    val hasLink = session.alarm.alarm.link.isNotEmpty()
+    val requireTyping = session.alarm.alarm.strict
     var typed by rememberSaveable { mutableStateOf("") }
-    val matches = AlarmCopy.matches(typed, session.alarm.kind)
+    val matches = AlarmCopy.matches(typed)
 
     Box(
         Modifier
@@ -207,7 +207,7 @@ internal fun AlarmScreen(
                     modifier = wide,
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Palette.Ink),
-                ) { Text("Open attendance", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
+                ) { Text(copy.openLabel, fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
                 Spacer(Modifier.height(10.dp))
             }
             Button(

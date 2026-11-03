@@ -11,6 +11,8 @@ public sealed class JsonStore
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         Converters = { new JsonStringEnumConverter() },
+        // 0.3 fields are read for migration, then left null and so never written back.
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
     public JsonStore(string folder)
@@ -44,7 +46,7 @@ public sealed class JsonStore
     /// <summary>Loads state; on first run creates it armed from <paramref name="now"/>.</summary>
     public ShiftbellState LoadState(DateTime now)
     {
-        var state = Read<ShiftbellState>(StatePath);
+        var state = Read<ShiftbellState>(StatePath)?.Migrate();
         if (state is null)
         {
             state = new ShiftbellState { ArmedSince = now };

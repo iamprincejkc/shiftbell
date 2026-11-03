@@ -70,24 +70,29 @@ internal sealed partial class App : Application
         _store = JsonStore.Default();
         var firstRun = !_store.SettingsExist;
         _settings = _store.LoadSettings();
-        if (firstRun)
-        {
-            _store.SaveSettings(_settings);
-        }
+        // Always written back: a 0.3 file is migrated to the alarm list here, once, rather than on every load.
+        _store.SaveSettings(_settings);
 
         _state = _store.LoadState(DateTime.Now);
-        _syncer = new Syncer(Dispatcher, () => _state, () => _store.SaveState(_state));
+        _syncer = new Syncer(Dispatcher, () => _state, () => _store.SaveState(_state), () => _settings, ReplaceSettings);
         _syncer.Configure(_settings.SyncCode);
-        _syncer.RoundFinished += (_, pulled) =>
+        _syncer.RoundFinished += (alarmsChanged, pulled) =>
         {
             _settingsWindow?.ShowSync(_settings.SyncCode, SyncStatus());
+            if (alarmsChanged)
+            {
+                // An alarm added or edited on the phone: new ring times need new wake-up triggers.
+                RegisterStartup();
+                _settingsWindow?.ShowAlarms(_settings, _state, DateTime.Now);
+            }
+
             HandleSyncedTests(pulled);
             Tick();
         };
+        PublishAlarms();
 
         _tray = new Tray();
         _tray.SettingsClicked += ShowSettings;
-        _tray.TestClicked += kind => Test(kind, _settings);
         _tray.DayOffClicked += ToggleDayOff;
         _tray.ExitClicked += ConfirmExit;
 
@@ -137,10 +142,10 @@ internal sealed partial class App : Application
                 ShowSettings();
                 break;
             case "test-in":
-                Test(AlarmKind.TimeIn, _settings);
+                Test(_settings.Find(Alarm.TimeInId) ?? Alarm.TimeIn());
                 break;
             case "test-out":
-                Test(AlarmKind.TimeOut, _settings);
+                Test(_settings.Find(Alarm.TimeOutId) ?? Alarm.TimeOut());
                 break;
             case "exit":
                 Shutdown();
@@ -276,10 +281,11 @@ internal sealed partial class App : Application
 
         foreach (var e in pulled)
         {
-            if (e.IsFreshTestFrom("phone", now) && _seenTests.Add(e.Id!) && !ended.Contains(e.Id!)
-                && _session is null && Enum.TryParse<AlarmKind>(e.Kind, out var kind))
+            if (e.IsFreshTestFrom("phone", now) && _seenTests.Add(e.Id!) && !ended.Contains(e.Id!) && _session is null)
             {
-                Test(kind, _settings, e.Id);
+                // The same alarm if this PC has it, otherwise a plain stand-in so the test still rings.
+                var alarm = e.AlarmId is { } id ? _settings.Find(id) : null;
+                Test(alarm ?? new Alarm { Id = "test", Name = "Test alarm", RingAt = TimeOnly.FromDateTime(now) }, e.Id);
             }
         }
     }
@@ -307,16 +313,16 @@ internal sealed partial class App : Application
             var date = session.Alarm.Date;
             if (outcome == AlarmOutcome.Confirmed)
             {
-                _state.Acknowledge(session.Kind, date, now);
+                _state.Acknowledge(session.Id, date, now);
                 _store.SaveState(_state);
-                _syncer.Send(SyncEvent.Ack(session.Kind, date, now));
+                _syncer.Send(SyncEvent.Ack(session.Alarm.Alarm, date, now));
             }
             else
             {
                 var until = now.AddMinutes(_settings.SnoozeMinutes);
-                _state.Snooze(session.Kind, date, until);
+                _state.Snooze(session.Id, date, until);
                 _store.SaveState(_state);
-                _syncer.Send(SyncEvent.Snoozed(session.Kind, date, now, until, _state.Day(date).For(session.Kind).Snoozes));
+                _syncer.Send(SyncEvent.Snoozed(session.Alarm.Alarm, date, now, until, _state.Day(date).Record(session.Id).Snoozes));
             }
         }
 
@@ -327,7 +333,7 @@ internal sealed partial class App : Application
     /// Rings a test alarm. Pressed here (no <paramref name="fromPhone"/> id), the phone is told to ring it too;
     /// rung because the phone pressed it, it carries the phone's id so stopping it here stops it there.
     /// </summary>
-    private void Test(AlarmKind kind, ShiftbellSettings settings, string? fromPhone = null)
+    private void Test(Alarm alarm, string? fromPhone = null)
     {
         if (_session is not null)
         {
@@ -335,17 +341,18 @@ internal sealed partial class App : Application
         }
 
         var now = DateTime.Now;
-        var alarm = settings.For(kind);
         var date = DateOnly.FromDateTime(now);
         var deadline = alarm.Deadline is { } d ? date.ToDateTime(d) : (DateTime?)null;
         var id = fromPhone ?? SyncEvent.NewTestId();
         _seenTests.Add(id);
         if (fromPhone is null)
         {
-            _syncer.Send(SyncEvent.Test(kind, now, id));
+            _syncer.Send(SyncEvent.Test(alarm, now, id));
         }
 
-        StartSession(new DueAlarm(kind, date, now, deadline, settings.MaxSnoozes), isTest: true, settings, id);
+        // A test after the alarm's deadline would only ever say "late"; it shows the normal screen instead.
+        var testDeadline = deadline is { } due && due > now ? deadline : null;
+        StartSession(new DueAlarm(alarm, date, now, testDeadline, _settings.MaxSnoozes), isTest: true, _settings, id);
     }
 
     private void ToggleDayOff()
@@ -367,31 +374,72 @@ internal sealed partial class App : Application
             return;
         }
 
-        _settingsWindow = new SettingsWindow(_settings, _registrationProblem);
+        _settingsWindow = new SettingsWindow(_settings, _state, _registrationProblem);
         _settingsWindow.ShowSync(_settings.SyncCode, SyncStatus());
-        _settingsWindow.Saved += SaveSettings;
+        _settingsWindow.AlarmSaved += SaveAlarm;
+        _settingsWindow.GeneralSaved += SaveGeneral;
         _settingsWindow.PairingChanged += SavePairing;
-        _settingsWindow.TestRequested += (kind, settings) => Test(kind, settings);
+        _settingsWindow.TestRequested += alarm => Test(alarm);
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         _settingsWindow.Show();
         _settingsWindow.Activate();
     }
 
-    private void SaveSettings(ShiftbellSettings settings)
+    /// <summary>
+    /// Adds, edits, turns on or off, or deletes (a tombstone) one alarm, and sends it to the phone. Moving when it
+    /// rings re-arms it, so a time pulled earlier than now does not fire a "late" alarm the moment it is saved.
+    /// </summary>
+    private void SaveAlarm(Alarm edited)
     {
-        var timesMoved = settings.TimeIn.RingAt != _settings.TimeIn.RingAt || settings.TimeOut.RingAt != _settings.TimeOut.RingAt;
-        _settings = settings;
-        _store.SaveSettings(settings);
-
-        // A ring time moved earlier than now must not fire a "late" alarm the moment you press Save.
-        if (timesMoved)
-        {
-            _state.ArmedSince = DateTime.Now;
-            _store.SaveState(_state);
-        }
-
+        var now = DateTime.Now;
+        var before = (_settings.Alarms ?? []).FirstOrDefault(a => a.Id == edited.Id);
+        var armedAt = before is null || edited.ScheduleDiffers(before) ? now : before.ArmedAt;
+        var alarm = (edited with { UpdatedAt = now, ArmedAt = armedAt }).Normalized();
+        ReplaceSettings(_settings.With(alarm));
+        _syncer.Send(SyncEvent.Changed(alarm));
+        _settingsWindow?.ShowAlarms(_settings, _state, now);
         RegisterStartup();
         Tick();
+    }
+
+    /// <summary>Snooze, catch-up and volume. These stay per device and are not synced.</summary>
+    private void SaveGeneral(ShiftbellSettings general)
+    {
+        ReplaceSettings(_settings with
+        {
+            SnoozeMinutes = general.SnoozeMinutes,
+            MaxSnoozes = general.MaxSnoozes,
+            CatchUpHours = general.CatchUpHours,
+            MinimumVolumePercent = general.MinimumVolumePercent,
+        });
+        Tick();
+    }
+
+    private void ReplaceSettings(ShiftbellSettings settings)
+    {
+        _settings = settings.Normalized();
+        _store.SaveSettings(_settings);
+    }
+
+    /// <summary>
+    /// Sends every alarm definition once after pairing or upgrading, so the other device learns the alarms that
+    /// were made before they were linked. The newest edit wins on both sides, so sending more than once is harmless.
+    /// </summary>
+    private void PublishAlarms()
+    {
+        if (!_syncer.Enabled || _state.AlarmsPublished)
+        {
+            return;
+        }
+
+        foreach (var alarm in _settings.Alarms ?? [])
+        {
+            _state.Outbox.Add(SyncEvent.Changed(alarm));
+        }
+
+        _state.AlarmsPublished = true;
+        _store.SaveState(_state);
+        _syncer.Kick();
     }
 
     /// <summary>Pairing applies at once, not on Save: the phone may already be scanning the code.</summary>
@@ -401,9 +449,11 @@ internal sealed partial class App : Application
         _store.SaveSettings(_settings);
         _state.Outbox.Clear();
         _state.SyncSince = 0;
+        _state.AlarmsPublished = false;
         _store.SaveState(_state);
         _syncer.Configure(code);
         _settingsWindow?.ShowSync(code, SyncStatus());
+        PublishAlarms();
         _syncer.Kick();
     }
 

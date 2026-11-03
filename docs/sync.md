@@ -2,7 +2,7 @@
 
 The PC app and the phone app tell each other when an alarm is confirmed, snoozed, or the day is marked off.
 Confirming on one stops the other; a snooze on one snoozes both; a day off on one silences both.
-Times, work days and the link are not synced.
+Since 0.4 the alarm list itself syncs too: adding, editing or deleting an alarm on one device applies to all of them ([decisions/0002-alarm-list.md](decisions/0002-alarm-list.md)).
 
 ## Relay
 
@@ -42,7 +42,9 @@ An event is UTF-8 JSON, encrypted with AES-256-GCM, a random 12-byte nonce, and 
 
 | Field | Meaning |
 |---|---|
-| `type` | `ack` (typed "done"), `snooze`, `dayoff`, `test` or `testend` |
+| `type` | `ack` (typed "done" or Dismiss), `snooze`, `dayoff`, `alarm`, `test` or `testend` |
+| `alarm` | The alarm's id (`ack`, `snooze`, `test`); 0.4 and later. A 0.3 event names the preset by `kind` only |
+| `def` | `alarm` only: the whole alarm definition, see [decisions/0002-alarm-list.md](decisions/0002-alarm-list.md) |
 | `kind` | `TimeIn` or `TimeOut` (not for `dayoff`) |
 | `date` | The work day, `yyyy-MM-dd` |
 | `at` | When it happened, local wall-clock time, `yyyy-MM-ddTHH:mm:ss` |

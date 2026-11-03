@@ -8,7 +8,8 @@ namespace Shiftbell;
 /// Runs sync rounds with the phone: send the outbox, then read what the phone did and merge it.
 /// The network work runs off the UI thread; the state is only ever touched on it, so the alarm loop never races it.
 /// </summary>
-internal sealed class Syncer(Dispatcher dispatcher, Func<ShiftbellState> state, Action save)
+internal sealed class Syncer(
+    Dispatcher dispatcher, Func<ShiftbellState> state, Action save, Func<ShiftbellSettings> settings, Action<ShiftbellSettings> saveSettings)
 {
     /// <summary>Reads start this far before the last server time, so an event that landed out of order is not skipped.</summary>
     private const long OverlapMs = 120_000;
@@ -18,7 +19,7 @@ internal sealed class Syncer(Dispatcher dispatcher, Func<ShiftbellState> state, 
     private SyncKeys? _keys;
 
     /// <summary>
-    /// Raised on the UI thread after a round, with whether the merged state changed and every event read
+    /// Raised on the UI thread after a round, with whether the alarm list changed and every event read
     /// (test alarms live only in these: they are never part of the state).
     /// </summary>
     public event Action<bool, IReadOnlyList<SyncEvent>>? RoundFinished;
@@ -92,11 +93,20 @@ internal sealed class Syncer(Dispatcher dispatcher, Func<ShiftbellState> state, 
         var current = state();
         var changed = sent.Count > 0 && current.Outbox.RemoveAll(e => sent.Contains(e)) > 0;
         var merged = false;
+        var alarmsChanged = false;
         if (pulled is not null)
         {
+            var list = settings();
             foreach (var e in pulled.Events)
             {
                 merged |= SyncMerge.Apply(current, e);
+                list = SyncMerge.Apply(list, e);
+            }
+
+            if (!ReferenceEquals(list, settings()))
+            {
+                saveSettings(list);
+                alarmsChanged = true;
             }
 
             current.SyncSince = pulled.ServerNow;
@@ -109,6 +119,6 @@ internal sealed class Syncer(Dispatcher dispatcher, Func<ShiftbellState> state, 
             save();
         }
 
-        RoundFinished?.Invoke(merged, pulled?.Events ?? []);
+        RoundFinished?.Invoke(alarmsChanged, pulled?.Events ?? []);
     }
 }

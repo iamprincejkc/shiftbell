@@ -28,7 +28,7 @@ public sealed class SyncClientTests
     public async Task A_push_posts_the_sealed_event_to_the_channel_with_the_token()
     {
         var fake = new Fake(_ => Json("""{"id":"x"}""", HttpStatusCode.Created));
-        var e = SyncEvent.Ack(AlarmKind.TimeOut, new DateOnly(2026, 10, 31), new DateTime(2026, 10, 31, 17, 2, 0));
+        var e = SyncEvent.Ack(Alarm.TimeOut(), new DateOnly(2026, 10, 31), new DateTime(2026, 10, 31, 17, 2, 0));
 
         Assert.True(await new SyncClient(new HttpClient(fake), Relay).Push(Keys, e, CancellationToken.None));
 

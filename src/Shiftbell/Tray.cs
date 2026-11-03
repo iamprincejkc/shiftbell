@@ -21,8 +21,6 @@ internal sealed class Tray : IDisposable
         menu.Items.Add(_today);
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add(_dayOff);
-        menu.Items.Add("Test time-in alarm", null, (_, _) => TestClicked?.Invoke(AlarmKind.TimeIn));
-        menu.Items.Add("Test time-out alarm", null, (_, _) => TestClicked?.Invoke(AlarmKind.TimeOut));
         menu.Items.Add("Settings…", null, (_, _) => SettingsClicked?.Invoke());
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => ExitClicked?.Invoke());
@@ -40,8 +38,6 @@ internal sealed class Tray : IDisposable
 
     public event Action? SettingsClicked;
 
-    public event Action<AlarmKind>? TestClicked;
-
     public event Action? DayOffClicked;
 
     public event Action? ExitClicked;
@@ -52,10 +48,8 @@ internal sealed class Tray : IDisposable
         var next = AlarmPlanner.Next(settings, state, now);
         var nextText = ringing ? "Ringing now"
             : next is null ? "No alarm in the next two weeks"
-            : $"Next: {Name(next.Kind)} · {When(next.At, now)}";
-        var todayText = day is { DayOff: true }
-            ? "Today: day off"
-            : $"Today: in {Punch(day?.TimeIn)} · out {Punch(day?.TimeOut)}";
+            : $"Next: {next.Alarm.Name} · {When(next.At, now)}";
+        var todayText = day is { DayOff: true } ? "Today: day off" : Today(settings, day, now);
 
         var text = nextText + "|" + todayText + "|" + day?.DayOff;
         if (text == _lastText)
@@ -78,9 +72,20 @@ internal sealed class Tray : IDisposable
         _icon.Dispose();
     }
 
-    private static string Name(AlarmKind kind) => kind == AlarmKind.TimeIn ? "time in" : "time out";
+    /// <summary>"Today: time in 7:46 AM · 1 of 3 done": the punch time first, since that is what gets asked about.</summary>
+    private static string Today(ShiftbellSettings settings, DayLog? day, DateTime now)
+    {
+        var date = DateOnly.FromDateTime(now);
+        var alarms = settings.Active.Where(a => a.Enabled && a.RingsOn(date)).ToList();
+        if (alarms.Count == 0)
+        {
+            return "Today: no alarms";
+        }
 
-    private static string Punch(AlarmRecord? record) => record?.AcknowledgedAt is { } at ? AlarmCopy.Time(at) : "–";
+        var done = alarms.Count(a => day?.Find(a.Id)?.AcknowledgedAt is not null);
+        var punch = day?.Find(Alarm.TimeInId)?.AcknowledgedAt is { } timedIn ? $"time in {AlarmCopy.Time(timedIn)} · " : "";
+        return $"Today: {punch}{done} of {alarms.Count} done";
+    }
 
     private static string When(DateTime at, DateTime now)
     {

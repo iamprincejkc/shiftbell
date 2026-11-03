@@ -2,6 +2,7 @@ package space.iamjkc.shiftbell
 
 import android.content.Context
 import android.util.AtomicFile
+import space.iamjkc.shiftbell.core.Alarm
 import space.iamjkc.shiftbell.core.Codec
 import space.iamjkc.shiftbell.core.ShiftbellSettings
 import space.iamjkc.shiftbell.core.ShiftbellState
@@ -27,26 +28,37 @@ object Store {
         state
     }
 
-    /**
-     * Saves settings. Moving a ring time re-arms from now, so pulling the time-in earlier than the current
-     * time does not fire a "late" alarm the moment it is saved.
-     */
-    fun saveSettings(context: Context, settings: ShiftbellSettings, now: LocalDateTime = LocalDateTime.now()) {
+    fun saveSettings(context: Context, settings: ShiftbellSettings) {
+        updateSettings(context) { settings }
+    }
+
+    /** Applies [change] to the saved settings under the lock, so a sync merge and an edit never lose each other. */
+    fun updateSettings(context: Context, change: (ShiftbellSettings) -> ShiftbellSettings) {
         synchronized(lock) {
-            val old = settings(context)
-            val normalized = settings.normalized()
-            write(file(context, SETTINGS), Codec.encodeSettings(normalized))
-            if (old.timeIn.ringAt != normalized.timeIn.ringAt || old.timeOut.ringAt != normalized.timeOut.ringAt) {
-                write(file(context, STATE), Codec.encodeState(state(context, now).copy(armedSince = now)))
-            }
+            write(file(context, SETTINGS), Codec.encodeSettings(change(settings(context)).normalized()))
         }
         Scheduler.reschedule(context)
     }
 
+    /**
+     * Adds, edits, turns on or off, or deletes (a tombstone) one alarm, and returns it as saved. Moving when it rings
+     * re-arms it, so a time pulled earlier than now does not fire a "late" alarm the moment it is saved.
+     */
+    fun saveAlarm(context: Context, edited: Alarm, now: LocalDateTime = LocalDateTime.now()): Alarm {
+        var saved = edited
+        updateSettings(context) { settings ->
+            val before = settings.alarms.orEmpty().firstOrNull { it.id == edited.id }
+            val armedAt = if (before == null || edited.scheduleDiffers(before)) now else before.armedAt
+            saved = edited.copy(updatedAt = now, armedAt = armedAt).normalized()
+            settings.with(saved)
+        }
+        return saved
+    }
+
     /** Pairs with a PC (or unpairs with ""). A new channel starts with an empty outbox and reads from the start. */
     fun pair(context: Context, code: String) {
-        saveSettings(context, settings(context).copy(syncCode = code))
-        updateState(context) { it.copy(outbox = emptyList(), syncSince = 0) }
+        updateSettings(context) { it.copy(syncCode = code) }
+        updateState(context) { it.copy(outbox = emptyList(), syncSince = 0, alarmsPublished = false) }
     }
 
     /** Applies [change] to the saved state under the lock, so two writers can never lose each other's change. */

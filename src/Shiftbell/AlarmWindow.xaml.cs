@@ -49,6 +49,7 @@ internal sealed partial class AlarmWindow : Window
         {
             AlarmTone.Late => (Color.FromRgb(0xFF, 0x5A, 0x5F), Color.FromRgb(0x33, 0x12, 0x15)),
             AlarmTone.TimeOut => (Color.FromRgb(0x6C, 0xA8, 0xFF), Color.FromRgb(0x10, 0x1C, 0x33)),
+            AlarmTone.Custom => (Color.FromRgb(0xB1, 0x8C, 0xFF), Color.FromRgb(0x1E, 0x15, 0x33)),
             _ => (Color.FromRgb(0xF5, 0xA6, 0x23), Color.FromRgb(0x2A, 0x21, 0x10)),
         };
         SetBrush("Accent", accent);
@@ -70,9 +71,12 @@ internal sealed partial class AlarmWindow : Window
         SnoozeLabel.Text = snooze;
         SnoozeButton.IsEnabled = canSnooze;
         OpenAttendanceButton.Visibility = hasAttendanceLink ? Visibility.Visible : Visibility.Collapsed;
+        OpenLabel.Text = copy.OpenLabel;
         // One primary button per screen: Open attendance if there is a link, else Confirm if no typing is
         // needed (it is enabled from the start), else "Let me do it now" while Confirm waits for the phrase.
         StepAsideButton.Style = (Style)Resources[!hasAttendanceLink && requireTyping ? "BigButton" : "GhostButton"];
+        // With a link and no typing, Dismiss is a way out, not the main action: the link stays the one filled button.
+        ConfirmButton.Style = (Style)Resources[hasAttendanceLink && !requireTyping ? "GhostButton" : "BigButton"];
 
         // Without typing there is nothing to frame, so the card's chrome goes and only the button remains.
         ConfirmCard.Background = requireTyping ? new SolidColorBrush(Color.FromRgb(0x14, 0x18, 0x20)) : Brushes.Transparent;
@@ -208,7 +212,7 @@ internal sealed partial class AlarmWindow : Window
     private void UpdateConfirmEnabled(bool requireTyping)
     {
         var typed = IsDocked ? DockConfirmBox.Text : ConfirmBox.Text;
-        var ok = !requireTyping || AlarmCopy.Matches(typed, _session.Kind);
+        var ok = !requireTyping || AlarmCopy.Matches(typed);
         ConfirmButton.IsEnabled = ok;
         DockConfirmButton.IsEnabled = ok;
     }

@@ -8,7 +8,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <AnalysisLevel>latest-recommended</AnalysisLevel>
-    <ShiftbellVersion>0.3.0</ShiftbellVersion>
+    <ShiftbellVersion>0.4.0</ShiftbellVersion>
     <Version>$(ShiftbellVersion)</Version>
     <Company>JKC</Company>
     <Product>Shiftbell</Product>

@@ -18,7 +18,7 @@ import android.os.VibratorManager
 import android.provider.Settings
 import androidx.core.content.ContextCompat
 import space.iamjkc.shiftbell.core.AlarmCopy
-import space.iamjkc.shiftbell.core.AlarmKind
+import space.iamjkc.shiftbell.core.Alarm
 import space.iamjkc.shiftbell.core.AlarmPlanner
 import space.iamjkc.shiftbell.core.DueAlarm
 import space.iamjkc.shiftbell.core.RingLoudness
@@ -52,13 +52,13 @@ class RingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_TEST -> {
-                val kind = AlarmKind.valueOf(intent.getStringExtra(EXTRA_KIND) ?: AlarmKind.TimeIn.name)
+                val alarm = Store.settings(this).find(intent.getStringExtra(EXTRA_ALARM).orEmpty()) ?: standIn()
                 val fromPc = intent.getStringExtra(EXTRA_TEST_ID)
                 val id = fromPc ?: SyncEvent.newTestId()
                 PhoneSync.markTestSeen(id)
                 // Pressed here: the PC rings it too. Rung because the PC pressed it: nothing to send back.
-                if (fromPc == null && Ringing.session.value == null) PhoneSync.send(this, SyncEvent.test(kind, LocalDateTime.now(), id))
-                startRinging(testAlarm(kind), isTest = true, testId = id)
+                if (fromPc == null && Ringing.session.value == null) PhoneSync.send(this, SyncEvent.test(alarm, LocalDateTime.now(), id))
+                startRinging(testAlarm(alarm), isTest = true, testId = id)
             }
             ACTION_END_ELSEWHERE -> stopEverything()
             ACTION_CONFIRM -> finish(confirmed = true)
@@ -153,13 +153,13 @@ class RingService : Service() {
         if (!session.isTest) {
             val now = LocalDateTime.now()
             if (confirmed) {
-                Store.updateState(this) { it.acknowledge(alarm.kind, alarm.date, now) }
-                PhoneSync.send(this, SyncEvent.ack(alarm.kind, alarm.date, now))
+                Store.updateState(this) { it.acknowledge(alarm.id, alarm.date, now) }
+                PhoneSync.send(this, SyncEvent.ack(alarm.alarm, alarm.date, now))
             } else {
                 val until = now.plusMinutes(session.settings.snoozeMinutes.toLong())
-                Store.updateState(this) { it.snooze(alarm.kind, alarm.date, until) }
-                val used = Store.state(this).find(alarm.date)?.of(alarm.kind)?.snoozes ?: 1
-                PhoneSync.send(this, SyncEvent.snoozed(alarm.kind, alarm.date, now, until, used))
+                Store.updateState(this) { it.snooze(alarm.id, alarm.date, until) }
+                val used = Store.state(this).find(alarm.date)?.of(alarm.id)?.snoozes ?: 1
+                PhoneSync.send(this, SyncEvent.snoozed(alarm.alarm, alarm.date, now, until, used))
             }
         }
 
@@ -253,7 +253,7 @@ class RingService : Service() {
 
     private fun notification(session: RingSession): Notification {
         val now = LocalDateTime.now()
-        val copy = AlarmCopy.of(session.alarm, session.settings, now)
+        val copy = AlarmCopy.of(session.alarm, now)
         val screen = PendingIntent.getActivity(
             this, 1, alarmScreenIntent(this), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -292,7 +292,7 @@ class RingService : Service() {
         private const val ACTION_SNOOZE = "space.iamjkc.shiftbell.SNOOZE"
         private const val ACTION_STEP_ASIDE = "space.iamjkc.shiftbell.STEP_ASIDE"
         private const val ACTION_END_ELSEWHERE = "space.iamjkc.shiftbell.END_ELSEWHERE"
-        private const val EXTRA_KIND = "kind"
+        private const val EXTRA_ALARM = "alarm"
         private const val EXTRA_TEST_ID = "testId"
 
         /** How long "Let me do it now" keeps the alarm out of the way before it takes the screen back. */
@@ -308,12 +308,13 @@ class RingService : Service() {
             }
         }
 
-        fun test(context: Context, kind: AlarmKind) =
-            send(context, ACTION_TEST) { putExtra(EXTRA_KIND, kind.name) }
+        /** Rings [alarm] now as a test, here and on the PC. Nothing is recorded. */
+        fun test(context: Context, alarm: Alarm) =
+            send(context, ACTION_TEST) { putExtra(EXTRA_ALARM, alarm.id) }
 
         /** Rings a test the PC started. May be refused when the app is in the background; that only skips a test. */
-        fun testFromPc(context: Context, kind: AlarmKind, id: String) {
-            runCatching { send(context, ACTION_TEST) { putExtra(EXTRA_KIND, kind.name).putExtra(EXTRA_TEST_ID, id) } }
+        fun testFromPc(context: Context, alarmId: String?, id: String) {
+            runCatching { send(context, ACTION_TEST) { putExtra(EXTRA_ALARM, alarmId).putExtra(EXTRA_TEST_ID, id) } }
         }
 
         /** The test ringing here was stopped on the PC. */
@@ -341,12 +342,15 @@ class RingService : Service() {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION)
 
         /** A test alarm rings as if it were due now, with no deadline (so it never says "late"), and is never recorded. */
-        private fun testAlarm(kind: AlarmKind): DueAlarm = DueAlarm(
-            kind = kind,
+        private fun testAlarm(alarm: Alarm): DueAlarm = DueAlarm(
+            alarm = alarm,
             date = java.time.LocalDate.now(),
             scheduledAt = LocalDateTime.now(),
             deadline = null,
             snoozesLeft = 2,
         )
+
+        /** A test for an alarm this phone does not have (yet): a plain stand-in, so the test still rings. */
+        private fun standIn() = Alarm(id = "test", name = "Test alarm", ringAt = java.time.LocalTime.now().withSecond(0).withNano(0))
     }
 }

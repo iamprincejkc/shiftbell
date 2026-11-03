@@ -4,16 +4,18 @@ import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 
-/** An alarm that should be ringing right now. [date] is the work day an acknowledgement is recorded against. */
+/** An alarm that should be ringing right now. [date] is the day an acknowledgement is recorded against. */
 data class DueAlarm(
-    val kind: AlarmKind,
+    val alarm: Alarm,
     val date: LocalDate,
     val scheduledAt: LocalDateTime,
     val deadline: LocalDateTime?,
     val snoozesLeft: Int,
-)
+) {
+    val id: String get() = alarm.id
+}
 
-data class UpcomingAlarm(val kind: AlarmKind, val at: LocalDateTime)
+data class UpcomingAlarm(val alarm: Alarm, val at: LocalDateTime)
 
 /** Pure decisions about alarms: settings + state + the time in, answer out. No clocks, no I/O. */
 object AlarmPlanner {
@@ -25,31 +27,27 @@ object AlarmPlanner {
         val today = now.toLocalDate()
         // Yesterday too, so an alarm late in the evening can still catch up after midnight.
         return listOf(today.minusDays(1), today)
-            .flatMap { date -> AlarmKind.entries.mapNotNull { evaluate(settings, state, it, date, now) } }
+            .flatMap { date -> settings.active.mapNotNull { evaluate(settings, state, it, date, now) } }
             .minByOrNull { it.scheduledAt }
     }
 
-    /** False once the ringing alarm was confirmed, snoozed or made a day off elsewhere - in practice, on the PC. */
+    /**
+     * False once the ringing alarm was confirmed, snoozed, deleted, turned off or made a day off elsewhere -
+     * in practice, on the PC through sync.
+     */
     fun stillDue(settings: ShiftbellSettings, state: ShiftbellState, alarm: DueAlarm, now: LocalDateTime): Boolean =
-        evaluate(settings, state, alarm.kind, alarm.date, now) != null
+        settings.find(alarm.id)?.let { evaluate(settings, state, it, alarm.date, now) } != null
 
-    private fun evaluate(
-        settings: ShiftbellSettings,
-        state: ShiftbellState,
-        kind: AlarmKind,
-        date: LocalDate,
-        now: LocalDateTime,
-    ): DueAlarm? {
-        val alarm = settings.of(kind)
-        if (!alarm.enabled || date.dayOfWeek !in settings.workDays) return null
+    private fun evaluate(settings: ShiftbellSettings, state: ShiftbellState, alarm: Alarm, date: LocalDate, now: LocalDateTime): DueAlarm? {
+        if (!alarm.enabled || !alarm.ringsOn(date)) return null
 
         val scheduled = date.atTime(alarm.ringAt)
-        if (scheduled < state.armedSince) return null
+        if (scheduled < state.armedSince || scheduled < alarm.armedAt) return null
 
         val day = state.find(date)
         if (day?.dayOff == true) return null
 
-        val record = day?.of(kind)
+        val record = day?.of(alarm.id)
         if (record?.acknowledgedAt != null) return null
 
         val snoozed = record?.snoozedUntil
@@ -58,7 +56,7 @@ object AlarmPlanner {
         if (now < ringFrom || now > ringFrom + grace) return null
 
         return DueAlarm(
-            kind = kind,
+            alarm = alarm,
             date = date,
             scheduledAt = scheduled,
             deadline = alarm.deadline?.let { date.atTime(it) },
@@ -75,12 +73,12 @@ object AlarmPlanner {
         for (offset in 0L..14L) {
             val date = today.plusDays(offset)
             val day = state.find(date)
-            if (date.dayOfWeek !in settings.workDays || day?.dayOff == true) continue
+            if (day?.dayOff == true) continue
 
-            val next = AlarmKind.entries
-                .filter { settings.of(it).enabled && day?.of(it)?.acknowledgedAt == null }
-                .map { UpcomingAlarm(it, day?.of(it)?.snoozedUntil ?: date.atTime(settings.of(it).ringAt)) }
-                .filter { it.at > now && it.at >= state.armedSince }
+            val next = settings.active
+                .filter { it.enabled && it.ringsOn(date) && day?.of(it.id)?.acknowledgedAt == null }
+                .map { UpcomingAlarm(it, day?.of(it.id)?.snoozedUntil ?: date.atTime(it.ringAt)) }
+                .filter { it.at > now && it.at >= state.armedSince && it.at >= it.alarm.armedAt }
                 .minByOrNull { it.at }
             if (next != null) return next
         }

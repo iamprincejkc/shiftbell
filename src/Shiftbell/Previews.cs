@@ -18,18 +18,22 @@ internal static class Previews
         var day = DateOnly.FromDateTime(DateTime.Now);
         DateTime At(int h, int m) => day.ToDateTime(new TimeOnly(h, m));
 
-        var plain = new ShiftbellSettings().Normalized();
-        var linked = plain with { AttendanceLink = "https://hr.example.com/attendance" };
-        var timeIn = new DueAlarm(AlarmKind.TimeIn, day, At(7, 45), At(8, 0), 2);
-        var timeOut = new DueAlarm(AlarmKind.TimeOut, day, At(17, 0), null, 2);
+        var settings = new ShiftbellSettings().Normalized();
+        const string link = "https://hr.example.com/attendance";
+        var timeIn = new DueAlarm(Alarm.TimeIn() with { Link = link }, day, At(7, 45), At(8, 0), 2);
+        var timeOut = new DueAlarm(Alarm.TimeOut() with { Link = link }, day, At(17, 0), null, 2);
+        var standup = new DueAlarm(
+            new Alarm { Id = "standup0", Name = "Standup", RingAt = new TimeOnly(10, 0), Days = Alarm.Weekdays, Strict = false, Link = "https://meet.example.com/standup" },
+            day, At(10, 0), null, 2);
 
-        RenderFull(folder, "full-time-in", timeIn, linked, At(7, 47), primary: true);
-        RenderFull(folder, "full-time-in-no-link", timeIn, plain, At(7, 47), primary: true);
-        RenderFull(folder, "full-late", timeIn with { SnoozesLeft = 0 }, linked, At(8, 14), primary: true);
-        RenderFull(folder, "full-time-out", timeOut, linked, At(17, 6), primary: true);
-        RenderFull(folder, "full-secondary", timeIn, linked, At(7, 47), primary: false);
-        RenderFull(folder, "full-no-typing", timeOut, plain with { RequireTypedConfirmation = false }, At(17, 0), primary: true);
-        RenderDock(folder, "dock-time-in", timeIn, linked, At(7, 48));
+        RenderFull(folder, "full-time-in", timeIn, settings, At(7, 47), primary: true);
+        RenderFull(folder, "full-time-in-no-link", timeIn with { Alarm = timeIn.Alarm with { Link = "" } }, settings, At(7, 47), primary: true);
+        RenderFull(folder, "full-late", timeIn with { SnoozesLeft = 0 }, settings, At(8, 14), primary: true);
+        RenderFull(folder, "full-time-out", timeOut, settings, At(17, 6), primary: true);
+        RenderFull(folder, "full-custom", standup, settings, At(10, 1), primary: true);
+        RenderFull(folder, "full-secondary", timeIn, settings, At(7, 47), primary: false);
+        RenderFull(folder, "full-no-typing", timeOut with { Alarm = timeOut.Alarm with { Strict = false } }, settings, At(17, 0), primary: true);
+        RenderDock(folder, "dock-time-in", timeIn, settings, At(7, 48));
     }
 
     private static void RenderFull(string folder, string name, DueAlarm alarm, ShiftbellSettings settings, DateTime now, bool primary)
@@ -50,8 +54,8 @@ internal static class Previews
     {
         var session = new AlarmSession(alarm, settings, isTest: true, () => now);
         var window = new AlarmWindow(session, primary);
-        window.Apply(AlarmCopy.For(alarm, settings, now), AlarmCopy.Snooze(settings, alarm), alarm.SnoozesLeft > 0,
-            settings.AttendanceLink.Length > 0, settings.RequireTypedConfirmation, dock);
+        window.Apply(AlarmCopy.For(alarm, now), AlarmCopy.Snooze(settings, alarm), alarm.SnoozesLeft > 0,
+            alarm.Alarm.Link.Length > 0, alarm.Alarm.Strict, dock);
         return window;
     }
 

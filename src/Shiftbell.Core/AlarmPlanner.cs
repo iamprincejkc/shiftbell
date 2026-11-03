@@ -1,10 +1,13 @@
 namespace Shiftbell.Core;
 
 /// <summary>An alarm that should be ringing right now.</summary>
-/// <param name="Date">The work day it belongs to, which is what an acknowledgement is recorded against.</param>
-public sealed record DueAlarm(AlarmKind Kind, DateOnly Date, DateTime ScheduledAt, DateTime? Deadline, int SnoozesLeft);
+/// <param name="Date">The day it belongs to, which is what an acknowledgement is recorded against.</param>
+public sealed record DueAlarm(Alarm Alarm, DateOnly Date, DateTime ScheduledAt, DateTime? Deadline, int SnoozesLeft)
+{
+    public string Id => Alarm.Id;
+}
 
-public sealed record UpcomingAlarm(AlarmKind Kind, DateTime At);
+public sealed record UpcomingAlarm(Alarm Alarm, DateTime At);
 
 /// <summary>Pure decisions about alarms: settings + state + the time in, answer out. No clocks, no I/O.</summary>
 public static class AlarmPlanner
@@ -19,41 +22,31 @@ public static class AlarmPlanner
     public static DueAlarm? DueNow(ShiftbellSettings settings, ShiftbellState state, DateTime now)
     {
         var today = DateOnly.FromDateTime(now);
-        DueAlarm? earliest = null;
 
         // Yesterday too, so an alarm late in the evening can still catch up after midnight.
-        foreach (var date in new[] { today.AddDays(-1), today })
-        {
-            foreach (var kind in Enum.GetValues<AlarmKind>())
-            {
-                var due = Evaluate(settings, state, kind, date, now);
-                if (due is not null && (earliest is null || due.ScheduledAt < earliest.ScheduledAt))
-                {
-                    earliest = due;
-                }
-            }
-        }
-
-        return earliest;
+        return new[] { today.AddDays(-1), today }
+            .SelectMany(date => settings.Active.Select(alarm => Evaluate(settings, state, alarm, date, now)))
+            .OfType<DueAlarm>()
+            .OrderBy(due => due.ScheduledAt)
+            .FirstOrDefault();
     }
 
     /// <summary>
-    /// False once the ringing alarm was confirmed, snoozed or made a day off by anything other than this alarm
-    /// screen - in practice, the phone through sync.
+    /// False once the ringing alarm was confirmed, snoozed, deleted, turned off or made a day off by anything
+    /// other than this alarm screen - in practice, another device through sync.
     /// </summary>
     public static bool StillDue(ShiftbellSettings settings, ShiftbellState state, DueAlarm alarm, DateTime now) =>
-        Evaluate(settings, state, alarm.Kind, alarm.Date, now) is not null;
+        settings.Find(alarm.Id) is { } current && Evaluate(settings, state, current, alarm.Date, now) is not null;
 
-    private static DueAlarm? Evaluate(ShiftbellSettings settings, ShiftbellState state, AlarmKind kind, DateOnly date, DateTime now)
+    private static DueAlarm? Evaluate(ShiftbellSettings settings, ShiftbellState state, Alarm alarm, DateOnly date, DateTime now)
     {
-        var alarm = settings.For(kind);
-        if (!alarm.Enabled || !settings.WorkDays.Contains(date.DayOfWeek))
+        if (!alarm.Enabled || !alarm.RingsOn(date))
         {
             return null;
         }
 
         var scheduled = date.ToDateTime(alarm.RingAt);
-        if (scheduled < state.ArmedSince)
+        if (scheduled < state.ArmedSince || scheduled < alarm.ArmedAt)
         {
             return null;
         }
@@ -64,7 +57,7 @@ public static class AlarmPlanner
             return null;
         }
 
-        var record = day?.For(kind);
+        var record = day?.Find(alarm.Id);
         if (record?.AcknowledgedAt is not null)
         {
             return null;
@@ -84,29 +77,29 @@ public static class AlarmPlanner
 
         var deadline = alarm.Deadline is { } d ? date.ToDateTime(d) : (DateTime?)null;
         var snoozesLeft = Math.Max(0, settings.MaxSnoozes - (record?.Snoozes ?? 0));
-        return new DueAlarm(kind, date, scheduled, deadline, snoozesLeft);
+        return new DueAlarm(alarm, date, scheduled, deadline, snoozesLeft);
     }
 
-    /// <summary>The next alarm that will ring after <paramref name="now"/>, looking two weeks ahead.</summary>
+    /// <summary>The next moment an alarm will start ringing after <paramref name="now"/>, snooze ends included, two weeks ahead.</summary>
     public static UpcomingAlarm? Next(ShiftbellSettings settings, ShiftbellState state, DateTime now)
     {
         var today = DateOnly.FromDateTime(now);
         for (var offset = 0; offset <= 14; offset++)
         {
             var date = today.AddDays(offset);
-            if (!settings.WorkDays.Contains(date.DayOfWeek) || state.Find(date) is { DayOff: true })
+            var day = state.Find(date);
+            if (day is { DayOff: true })
             {
                 continue;
             }
 
-            var candidates = Enum.GetValues<AlarmKind>()
-                .Select(kind => (kind, alarm: settings.For(kind), record: state.Find(date)?.For(kind)))
-                .Where(c => c.alarm.Enabled && c.record?.AcknowledgedAt is null)
-                .Select(c => new UpcomingAlarm(c.kind, c.record?.SnoozedUntil ?? date.ToDateTime(c.alarm.RingAt)))
-                .Where(c => c.At > now && c.At >= state.ArmedSince)
-                .OrderBy(c => c.At);
-
-            if (candidates.FirstOrDefault() is { } next)
+            var next = settings.Active
+                .Where(alarm => alarm.Enabled && alarm.RingsOn(date) && day?.Find(alarm.Id)?.AcknowledgedAt is null)
+                .Select(alarm => new UpcomingAlarm(alarm, day?.Find(alarm.Id)?.SnoozedUntil ?? date.ToDateTime(alarm.RingAt)))
+                .Where(c => c.At > now && c.At >= state.ArmedSince && c.At >= c.Alarm.ArmedAt)
+                .OrderBy(c => c.At)
+                .FirstOrDefault();
+            if (next is not null)
             {
                 return next;
             }
@@ -120,7 +113,10 @@ public static class AlarmPlanner
         DueNow(settings, state, now) is not null
         || Next(settings, state, now) is { } next && next.At - now <= StayAwakeLead;
 
-    /// <summary>The ring times on each work day, for registering wake-from-sleep triggers.</summary>
+    /// <summary>
+    /// Every distinct time an alarm rings, for registering wake-from-sleep triggers. One-off alarms are included by
+    /// time of day: a wake that finds nothing due is harmless.
+    /// </summary>
     public static IEnumerable<TimeOnly> RingTimes(ShiftbellSettings settings) =>
-        Enum.GetValues<AlarmKind>().Select(settings.For).Where(a => a.Enabled).Select(a => a.RingAt).Distinct().Order();
+        settings.Active.Where(a => a.Enabled).Select(a => a.RingAt).Distinct().Order();
 }

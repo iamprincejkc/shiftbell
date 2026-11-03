@@ -15,10 +15,14 @@ public sealed record SyncEvent
 {
     public int V { get; init; } = 1;
 
-    /// <summary><c>ack</c>, <c>snooze</c> or <c>dayoff</c>.</summary>
+    /// <summary><c>ack</c>, <c>snooze</c>, <c>dayoff</c>, <c>alarm</c>, <c>test</c> or <c>testend</c>.</summary>
     public string Type { get; init; } = "";
 
+    /// <summary>0.3's <c>TimeIn</c> / <c>TimeOut</c>; still written for the presets so a 0.3 device understands.</summary>
     public string? Kind { get; init; }
+
+    /// <summary>The alarm's id, for <c>ack</c>, <c>snooze</c> and <c>test</c>.</summary>
+    public string? Alarm { get; init; }
 
     public string Date { get; init; } = "";
 
@@ -33,6 +37,9 @@ public sealed record SyncEvent
     /// <summary><c>test</c> and <c>testend</c> only: which test alarm, so stopping it on one device stops that one elsewhere.</summary>
     public string? Id { get; init; }
 
+    /// <summary><c>alarm</c> only: the whole definition, added, edited or deleted.</summary>
+    public AlarmWire? Def { get; init; }
+
     public string From { get; init; } = "pc";
 
     /// <summary>A test alarm older than this when it arrives is not rung: it was over long ago.</summary>
@@ -41,14 +48,36 @@ public sealed record SyncEvent
     public const string DateFormat = "yyyy-MM-dd";
     public const string TimeFormat = "yyyy-MM-dd'T'HH:mm:ss";
 
-    public static SyncEvent Ack(AlarmKind kind, DateOnly date, DateTime at) => new()
+    public static SyncEvent Ack(Alarm alarm, DateOnly date, DateTime at) => new()
     {
-        Type = "ack", Kind = kind.ToString(), Date = Format(date), At = Format(at),
+        Type = "ack", Kind = LegacyKind(alarm), Alarm = alarm.Id, Date = Format(date), At = Format(at),
     };
 
-    public static SyncEvent Snoozed(AlarmKind kind, DateOnly date, DateTime at, DateTime until, int snoozes) => new()
+    public static SyncEvent Snoozed(Alarm alarm, DateOnly date, DateTime at, DateTime until, int snoozes) => new()
     {
-        Type = "snooze", Kind = kind.ToString(), Date = Format(date), At = Format(at), Until = Format(until), Snoozes = snoozes,
+        Type = "snooze", Kind = LegacyKind(alarm), Alarm = alarm.Id, Date = Format(date), At = Format(at), Until = Format(until), Snoozes = snoozes,
+    };
+
+    /// <summary>An alarm was added, edited or deleted here.</summary>
+    public static SyncEvent Changed(Alarm alarm) => new()
+    {
+        Type = "alarm", Date = Format(DateOnly.FromDateTime(alarm.UpdatedAt)), At = Format(alarm.UpdatedAt), Def = AlarmWire.From(alarm),
+    };
+
+    /// <summary>The alarm an event is about: its id, or for a 0.3 event, the preset its kind names. Not sent.</summary>
+    [JsonIgnore]
+    public string? AlarmId => Alarm ?? Kind switch
+    {
+        "TimeIn" => Shiftbell.Core.Alarm.TimeInId,
+        "TimeOut" => Shiftbell.Core.Alarm.TimeOutId,
+        _ => null,
+    };
+
+    private static string? LegacyKind(Alarm alarm) => alarm.Id switch
+    {
+        Shiftbell.Core.Alarm.TimeInId => "TimeIn",
+        Shiftbell.Core.Alarm.TimeOutId => "TimeOut",
+        _ => null,
     };
 
     public static SyncEvent DayOff(DateOnly date, DateTime at, bool off) => new()
@@ -57,9 +86,9 @@ public sealed record SyncEvent
     };
 
     /// <summary>A test alarm started here; the other device rings it too. Never recorded in the state.</summary>
-    public static SyncEvent Test(AlarmKind kind, DateTime at, string id) => new()
+    public static SyncEvent Test(Alarm alarm, DateTime at, string id) => new()
     {
-        Type = "test", Kind = kind.ToString(), Date = Format(DateOnly.FromDateTime(at)), At = Format(at), Id = id,
+        Type = "test", Kind = LegacyKind(alarm), Alarm = alarm.Id, Date = Format(DateOnly.FromDateTime(at)), At = Format(at), Id = id,
     };
 
     /// <summary>The test alarm with this id was stopped here, so stop it there too.</summary>
@@ -194,10 +223,87 @@ public static class SyncCrypto
     private static byte[] Aad(SyncKeys keys) => Encoding.UTF8.GetBytes("shiftbell/v1/" + keys.Channel);
 }
 
-/// <summary>Folds an event into the state. Idempotent and order-independent, so replays and overlaps are harmless.</summary>
+/// <summary>
+/// An alarm definition as it travels between devices: plain strings in fixed formats, the same field names
+/// and order as the phone app, so both sides read each other byte for byte (docs/decisions/0002-alarm-list.md).
+/// </summary>
+public sealed record AlarmWire
+{
+    public string Id { get; init; } = "";
+
+    public string Role { get; init; } = nameof(AlarmRole.Custom);
+
+    public string Name { get; init; } = "";
+
+    public bool Enabled { get; init; } = true;
+
+    /// <summary><c>HH:mm</c>.</summary>
+    public string RingAt { get; init; } = "";
+
+    public string? Deadline { get; init; }
+
+    public IReadOnlyList<string> Days { get; init; } = [];
+
+    /// <summary><c>yyyy-MM-dd</c> for a one-off alarm.</summary>
+    public string? Date { get; init; }
+
+    public bool Strict { get; init; } = true;
+
+    public string Link { get; init; } = "";
+
+    public string ArmedAt { get; init; } = "";
+
+    public string UpdatedAt { get; init; } = "";
+
+    public bool Deleted { get; init; }
+
+    private const string Clock = "HH:mm";
+
+    public static AlarmWire From(Alarm alarm) => new()
+    {
+        Id = alarm.Id,
+        Role = alarm.Role.ToString(),
+        Name = alarm.Name,
+        Enabled = alarm.Enabled,
+        RingAt = alarm.RingAt.ToString(Clock, CultureInfo.InvariantCulture),
+        Deadline = alarm.Deadline?.ToString(Clock, CultureInfo.InvariantCulture),
+        Days = alarm.Days.Select(d => d.ToString()).ToArray(),
+        Date = alarm.Date is { } date ? SyncEvent.Format(date) : null,
+        Strict = alarm.Strict,
+        Link = alarm.Link,
+        ArmedAt = SyncEvent.Format(alarm.ArmedAt),
+        UpdatedAt = SyncEvent.Format(alarm.UpdatedAt),
+        Deleted = alarm.Deleted,
+    };
+
+    /// <summary>Null for a definition that does not parse; it is skipped, never fatal.</summary>
+    public Alarm? ToAlarm()
+    {
+        var invariant = CultureInfo.InvariantCulture;
+        if (Id.Length == 0
+            || !Enum.TryParse<AlarmRole>(Role, out var role)
+            || !TimeOnly.TryParseExact(RingAt, Clock, invariant, DateTimeStyles.None, out var ringAt)
+            || !DateTime.TryParseExact(UpdatedAt, SyncEvent.TimeFormat, invariant, DateTimeStyles.None, out var updatedAt))
+        {
+            return null;
+        }
+
+        TimeOnly? deadline = TimeOnly.TryParseExact(Deadline, Clock, invariant, DateTimeStyles.None, out var d) ? d : null;
+        DateOnly? date = DateOnly.TryParseExact(Date, SyncEvent.DateFormat, invariant, DateTimeStyles.None, out var on) ? on : null;
+        DateTime.TryParseExact(ArmedAt, SyncEvent.TimeFormat, invariant, DateTimeStyles.None, out var armedAt);
+        var days = (Days ?? []).Select(day => Enum.TryParse<DayOfWeek>(day, out var parsed) ? parsed : (DayOfWeek?)null).OfType<DayOfWeek>().ToArray();
+        return new Alarm
+        {
+            Id = Id, Role = role, Name = Name ?? "", Enabled = Enabled, RingAt = ringAt, Deadline = deadline, Days = days, Date = date,
+            Strict = Strict, Link = Link ?? "", ArmedAt = armedAt, UpdatedAt = updatedAt, Deleted = Deleted,
+        }.Normalized();
+    }
+}
+
+/// <summary>Folds events into the state and settings. Idempotent and order-independent, so replays and overlaps are harmless.</summary>
 public static class SyncMerge
 {
-    /// <summary>True when the state changed.</summary>
+    /// <summary>Applies an ack, snooze or day off to the state. True when it changed.</summary>
     public static bool Apply(ShiftbellState state, SyncEvent e)
     {
         if (!DateOnly.TryParseExact(e.Date, SyncEvent.DateFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
@@ -208,9 +314,9 @@ public static class SyncMerge
 
         switch (e.Type)
         {
-            case "ack" when Enum.TryParse<AlarmKind>(e.Kind, out var kind):
+            case "ack" when e.AlarmId is { } id:
             {
-                var record = state.Day(date).For(kind);
+                var record = state.Day(date).Record(id);
                 if (record.AcknowledgedAt is { } existing && existing <= at)
                 {
                     return false;
@@ -221,9 +327,9 @@ public static class SyncMerge
                 return true;
             }
 
-            case "snooze" when Enum.TryParse<AlarmKind>(e.Kind, out var kind) && TryTime(e.Until, out var until):
+            case "snooze" when e.AlarmId is { } id && TryTime(e.Until, out var until):
             {
-                var record = state.Day(date).For(kind);
+                var record = state.Day(date).Record(id);
                 if (record.AcknowledgedAt is not null)
                 {
                     return false;
@@ -261,6 +367,18 @@ public static class SyncMerge
             default:
                 return false;
         }
+    }
+
+    /// <summary>Applies an <c>alarm</c> event to the list: the newest <see cref="Alarm.UpdatedAt"/> wins, ties keep what is there.</summary>
+    public static ShiftbellSettings Apply(ShiftbellSettings settings, SyncEvent e)
+    {
+        if (e.Type != "alarm" || e.Def?.ToAlarm() is not { } incoming)
+        {
+            return settings;
+        }
+
+        var existing = (settings.Alarms ?? []).FirstOrDefault(a => a.Id == incoming.Id);
+        return existing is not null && existing.UpdatedAt >= incoming.UpdatedAt ? settings : settings.With(incoming);
     }
 
     private static bool TryTime(string? text, out DateTime value) =>

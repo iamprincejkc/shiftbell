@@ -24,10 +24,12 @@ object Palette {
     val Amber = Color(0xFFF5A623)
     val Blue = Color(0xFF6CA8FF)
     val Red = Color(0xFFFF5A5F)
+    val Violet = Color(0xFFB18CFF)
 
     fun accent(tone: AlarmTone): Color = when (tone) {
         AlarmTone.TimeIn -> Amber
         AlarmTone.TimeOut -> Blue
+        AlarmTone.Custom -> Violet
         AlarmTone.Late -> Red
     }
 }

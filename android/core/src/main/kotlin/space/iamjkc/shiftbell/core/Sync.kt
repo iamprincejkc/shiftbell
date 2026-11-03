@@ -4,9 +4,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.security.GeneralSecurityException
 import java.security.SecureRandom
+import java.time.DayOfWeek
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 import java.util.Base64
@@ -22,9 +24,12 @@ import javax.crypto.spec.SecretKeySpec
 @Serializable
 data class SyncEvent(
     val v: Int = 1,
-    /** `ack`, `snooze` or `dayoff`. */
+    /** `ack`, `snooze`, `dayoff`, `alarm`, `test` or `testend`. */
     val type: String,
+    /** 0.3's `TimeIn` / `TimeOut`; still written for the presets so a 0.3 device understands. */
     val kind: String? = null,
+    /** The alarm's id, for `ack`, `snooze` and `test`. */
+    val alarm: String? = null,
     val date: String,
     val at: String,
     val until: String? = null,
@@ -32,8 +37,18 @@ data class SyncEvent(
     val off: Boolean? = null,
     /** `test` and `testend` only: which test alarm, so stopping it on one device stops that one elsewhere. */
     val id: String? = null,
+    /** `alarm` only: the whole definition, added, edited or deleted. */
+    val def: AlarmWire? = null,
     val from: String = "phone",
 ) {
+    /** The alarm an event is about: its id, or for a 0.3 event, the preset its kind names. */
+    val alarmId: String?
+        get() = alarm ?: when (kind) {
+            "TimeIn" -> Alarm.TIME_IN_ID
+            "TimeOut" -> Alarm.TIME_OUT_ID
+            else -> null
+        }
+
     /** A test from the other device that should ring here now. */
     fun isFreshTestFrom(otherDevice: String, now: LocalDateTime): Boolean {
         if (type != "test" || from != otherDevice || id.isNullOrEmpty()) return false
@@ -49,9 +64,19 @@ data class SyncEvent(
         /** A test alarm older than this when it arrives is not rung: it was over long ago. */
         val TEST_FRESH_FOR: Duration = Duration.ofMinutes(2)
 
+        val DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+        val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")
+
+        private fun legacyKind(alarm: Alarm): String? = when (alarm.id) {
+            Alarm.TIME_IN_ID -> "TimeIn"
+            Alarm.TIME_OUT_ID -> "TimeOut"
+            else -> null
+        }
+
         /** A test alarm started here; the other device rings it too. Never recorded in the state. */
-        fun test(kind: AlarmKind, at: LocalDateTime, id: String) =
-            SyncEvent(type = "test", kind = kind.name, date = DATE.format(at), at = TIME.format(at), id = id)
+        fun test(alarm: Alarm, at: LocalDateTime, id: String) = SyncEvent(
+            type = "test", kind = legacyKind(alarm), alarm = alarm.id, date = DATE.format(at), at = TIME.format(at), id = id,
+        )
 
         /** The test alarm with this id was stopped here, so stop it there too. */
         fun testEnd(id: String, at: LocalDateTime) =
@@ -59,18 +84,93 @@ data class SyncEvent(
 
         fun newTestId(): String = ByteArray(8).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
 
-        val DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
-        val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")
+        fun ack(alarm: Alarm, date: LocalDate, at: LocalDateTime) =
+            SyncEvent(type = "ack", kind = legacyKind(alarm), alarm = alarm.id, date = DATE.format(date), at = TIME.format(at))
 
-        fun ack(kind: AlarmKind, date: LocalDate, at: LocalDateTime) =
-            SyncEvent(type = "ack", kind = kind.name, date = DATE.format(date), at = TIME.format(at))
-
-        fun snoozed(kind: AlarmKind, date: LocalDate, at: LocalDateTime, until: LocalDateTime, snoozes: Int) = SyncEvent(
-            type = "snooze", kind = kind.name, date = DATE.format(date), at = TIME.format(at), until = TIME.format(until), snoozes = snoozes,
+        fun snoozed(alarm: Alarm, date: LocalDate, at: LocalDateTime, until: LocalDateTime, snoozes: Int) = SyncEvent(
+            type = "snooze", kind = legacyKind(alarm), alarm = alarm.id, date = DATE.format(date), at = TIME.format(at),
+            until = TIME.format(until), snoozes = snoozes,
         )
 
         fun dayOff(date: LocalDate, at: LocalDateTime, off: Boolean) =
             SyncEvent(type = "dayoff", date = DATE.format(date), at = TIME.format(at), off = off)
+
+        /** An alarm was added, edited or deleted here. */
+        fun changed(alarm: Alarm) = SyncEvent(
+            type = "alarm", date = DATE.format(alarm.updatedAt), at = TIME.format(alarm.updatedAt), def = AlarmWire.from(alarm),
+        )
+    }
+}
+
+/**
+ * An alarm definition as it travels between devices: plain strings in fixed formats, the same field names and
+ * order as the PC app, so both sides read each other byte for byte (docs/decisions/0002-alarm-list.md).
+ */
+@Serializable
+data class AlarmWire(
+    val id: String,
+    val role: String = AlarmRole.Custom.name,
+    val name: String = "",
+    val enabled: Boolean = true,
+    /** `HH:mm`. */
+    val ringAt: String,
+    val deadline: String? = null,
+    val days: List<String> = emptyList(),
+    /** `yyyy-MM-dd` for a one-off alarm. */
+    val date: String? = null,
+    val strict: Boolean = true,
+    val link: String = "",
+    val armedAt: String = "",
+    val updatedAt: String = "",
+    val deleted: Boolean = false,
+) {
+    /** Null for a definition that does not parse; it is skipped, never fatal. */
+    fun toAlarm(): Alarm? = try {
+        val role = AlarmRole.entries.firstOrNull { it.name == role }
+        if (id.isEmpty() || role == null) {
+            null
+        } else {
+            Alarm(
+                id = id,
+                role = role,
+                name = name,
+                enabled = enabled,
+                ringAt = LocalTime.parse(ringAt, CLOCK),
+                deadline = deadline?.let { LocalTime.parse(it, CLOCK) },
+                days = days.mapNotNull { day -> DayOfWeek.entries.firstOrNull { it.name.equals(day, ignoreCase = true) } },
+                date = date?.let { LocalDate.parse(it, SyncEvent.DATE) },
+                strict = strict,
+                link = link,
+                armedAt = runCatching { LocalDateTime.parse(armedAt, SyncEvent.TIME) }.getOrDefault(Alarm.NEVER_ARMED),
+                updatedAt = LocalDateTime.parse(updatedAt, SyncEvent.TIME),
+                deleted = deleted,
+            ).normalized()
+        }
+    } catch (_: DateTimeParseException) {
+        null
+    }
+
+    companion object {
+        private val CLOCK: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+        /** Day names as the PC writes them: `Monday`, not `MONDAY`. */
+        private fun dayName(day: DayOfWeek) = day.name.lowercase().replaceFirstChar { it.uppercase() }
+
+        fun from(alarm: Alarm) = AlarmWire(
+            id = alarm.id,
+            role = alarm.role.name,
+            name = alarm.name,
+            enabled = alarm.enabled,
+            ringAt = CLOCK.format(alarm.ringAt),
+            deadline = alarm.deadline?.let { CLOCK.format(it) },
+            days = alarm.days.map(::dayName),
+            date = alarm.date?.let { SyncEvent.DATE.format(it) },
+            strict = alarm.strict,
+            link = alarm.link,
+            armedAt = SyncEvent.TIME.format(alarm.armedAt),
+            updatedAt = SyncEvent.TIME.format(alarm.updatedAt),
+            deleted = alarm.deleted,
+        )
     }
 }
 
@@ -149,25 +249,25 @@ object SyncCrypto {
         }
 }
 
-/** Folds events into the state. Idempotent and order-independent, so replays and overlaps are harmless. */
+/** Folds events into the state and settings. Idempotent and order-independent, so replays and overlaps are harmless. */
 object SyncMerge {
+    /** Applies an ack, snooze or day off to the state. Returns the same instance when nothing changed. */
     fun apply(state: ShiftbellState, event: SyncEvent): ShiftbellState {
         val date = parse { LocalDate.parse(event.date, SyncEvent.DATE) } ?: return state
         val at = time(event.at) ?: return state
-        val day = state.find(date) ?: DayLog(date)
 
-        val changed = when (event.type) {
+        return when (event.type) {
             "ack" -> {
-                val kind = kind(event.kind) ?: return state
-                val record = day.of(kind)
+                val id = event.alarmId ?: return state
+                val record = state.find(date)?.of(id) ?: AlarmRecord()
                 val existing = record.acknowledgedAt
                 if (existing != null && existing <= at) return state
-                day.with(kind, record.copy(acknowledgedAt = at, snoozedUntil = null))
+                state.update(date) { it.with(id, record.copy(acknowledgedAt = at, snoozedUntil = null)) }
             }
             "snooze" -> {
-                val kind = kind(event.kind) ?: return state
+                val id = event.alarmId ?: return state
                 val until = time(event.until) ?: return state
-                val record = day.of(kind)
+                val record = state.find(date)?.of(id) ?: AlarmRecord()
                 if (record.acknowledgedAt != null) return state
                 val current = record.snoozedUntil
                 val next = record.copy(
@@ -175,20 +275,25 @@ object SyncMerge {
                     snoozes = maxOf(record.snoozes, event.snoozes ?: 0),
                 )
                 if (next == record) return state
-                day.with(kind, next)
+                state.update(date) { it.with(id, next) }
             }
             "dayoff" -> {
                 val off = event.off ?: return state
-                val changedAt = day.dayOffChangedAt
+                val changedAt = state.find(date)?.dayOffChangedAt
                 if (changedAt != null && changedAt >= at) return state
-                day.copy(dayOff = off, dayOffChangedAt = at)
+                state.update(date) { it.copy(dayOff = off, dayOffChangedAt = at) }
             }
-            else -> return state
+            else -> state
         }
-        return state.copy(days = state.days.filter { it.date != date } + changed)
     }
 
-    private fun kind(name: String?): AlarmKind? = AlarmKind.entries.firstOrNull { it.name == name }
+    /** Applies an `alarm` event to the list: the newest [Alarm.updatedAt] wins, ties keep what is there. */
+    fun apply(settings: ShiftbellSettings, event: SyncEvent): ShiftbellSettings {
+        if (event.type != "alarm") return settings
+        val incoming = event.def?.toAlarm() ?: return settings
+        val existing = settings.alarms.orEmpty().firstOrNull { it.id == incoming.id }
+        return if (existing != null && existing.updatedAt >= incoming.updatedAt) settings else settings.with(incoming)
+    }
 
     private fun time(text: String?): LocalDateTime? = text?.let { parse { LocalDateTime.parse(it, SyncEvent.TIME) } }
 

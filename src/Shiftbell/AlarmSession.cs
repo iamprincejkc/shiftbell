@@ -46,14 +46,14 @@ internal sealed class AlarmSession : IDisposable
 
     public DueAlarm Alarm { get; }
 
-    public AlarmKind Kind => Alarm.Kind;
+    public string Id => Alarm.Id;
 
     public bool IsTest { get; }
 
     /// <summary>For a test alarm: its sync id, shared with the phone so stopping it on either stops both.</summary>
     public string? TestId { get; init; }
 
-    public bool RequireTyping => _settings.RequireTypedConfirmation;
+    public bool RequireTyping => Alarm.Alarm.Strict;
 
     private AlarmWindow Primary => _windows.First(w => w.IsPrimary);
 
@@ -110,7 +110,7 @@ internal sealed class AlarmSession : IDisposable
 
     public void OpenAttendance()
     {
-        var link = _settings.AttendanceLink;
+        var link = Alarm.Alarm.Link;
         if (link.Length == 0)
         {
             return;
@@ -167,11 +167,11 @@ internal sealed class AlarmSession : IDisposable
     private void Refresh()
     {
         var now = _now();
-        var copy = AlarmCopy.For(Alarm, _settings, now);
+        var copy = AlarmCopy.For(Alarm, now);
         var dock = _dockedUntil is { } until ? $"· full screen again in {Countdown(until - now)}" : "";
         foreach (var window in _windows)
         {
-            window.Apply(copy, AlarmCopy.Snooze(_settings, Alarm), Alarm.SnoozesLeft > 0, _settings.AttendanceLink.Length > 0, RequireTyping, dock);
+            window.Apply(copy, AlarmCopy.Snooze(_settings, Alarm), Alarm.SnoozesLeft > 0, Alarm.Alarm.Link.Length > 0, RequireTyping, dock);
         }
     }
 

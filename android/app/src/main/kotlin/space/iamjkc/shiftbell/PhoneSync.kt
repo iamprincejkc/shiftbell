@@ -3,7 +3,6 @@ package space.iamjkc.shiftbell
 import android.content.Context
 import org.json.JSONException
 import org.json.JSONObject
-import space.iamjkc.shiftbell.core.AlarmKind
 import space.iamjkc.shiftbell.core.SyncCrypto
 import space.iamjkc.shiftbell.core.SyncEvent
 import space.iamjkc.shiftbell.core.SyncKeys
@@ -79,10 +78,29 @@ object PhoneSync {
             next
         }
         if (pulled != null) {
+            // Alarms added, edited or deleted on the PC; the newest edit of each wins.
+            Store.updateSettings(context) { settings -> pulled.events.fold(settings) { list, event -> SyncMerge.apply(list, event) } }
             lastSuccess = LocalDateTime.now()
             handleTests(context, pulled.events)
         }
         return merged
+    }
+
+    /**
+     * Sends every alarm definition once after pairing or upgrading, so the PC learns the alarms made before they were
+     * linked. The newest edit wins on both sides, so sending more than once is harmless.
+     */
+    fun publish(context: Context) {
+        if (!paired(context) || Store.state(context).alarmsPublished) return
+        val all = Store.settings(context).alarms.orEmpty().map { SyncEvent.changed(it) }
+        Store.updateState(context) { it.copy(outbox = it.outbox + all, alarmsPublished = true) }
+        start(context)
+    }
+
+    /** Saves one alarm here and sends it to the PC. */
+    fun saveAlarm(context: Context, alarm: space.iamjkc.shiftbell.core.Alarm) {
+        val saved = Store.saveAlarm(context, alarm)
+        send(context, SyncEvent.changed(saved))
     }
 
     /** Test ids already rung or started here, so the overlapping reads never ring the same test twice. */
@@ -101,9 +119,8 @@ object PhoneSync {
 
         for (event in events) {
             val id = event.id ?: continue
-            val kind = AlarmKind.entries.firstOrNull { it.name == event.kind } ?: continue
             if (event.isFreshTestFrom("pc", now) && seenTests.add(id) && id !in ended && Ringing.session.value == null) {
-                RingService.testFromPc(context, kind, id)
+                RingService.testFromPc(context, event.alarmId, id)
             }
         }
     }

@@ -25,34 +25,56 @@ public sealed class JsonStoreTests : IDisposable
     public void Settings_and_state_round_trip()
     {
         var store = new JsonStore(_folder);
-        var settings = new ShiftbellSettings
+        var standup = new Alarm
         {
-            TimeIn = new AlarmSettings { RingAt = new TimeOnly(6, 50), Deadline = new TimeOnly(7, 0) },
-            AttendanceLink = "https://hr.example.test/punch",
-            WorkDays = [DayOfWeek.Saturday],
+            Id = "standup0", Name = "Standup", RingAt = new TimeOnly(10, 0), Days = [DayOfWeek.Saturday], Strict = false,
+            Link = "https://meet.example.test/standup", UpdatedAt = new DateTime(2026, 10, 27, 9, 0, 0),
         };
-        store.SaveSettings(settings);
+        store.SaveSettings(new ShiftbellSettings().Normalized().With(standup));
 
         var state = new ShiftbellState { ArmedSince = new DateTime(2026, 10, 1) };
-        state.Acknowledge(AlarmKind.TimeOut, new DateOnly(2026, 10, 27), new DateTime(2026, 10, 27, 17, 2, 0));
+        state.Acknowledge(Alarm.TimeOutId, new DateOnly(2026, 10, 27), new DateTime(2026, 10, 27, 17, 2, 0));
         store.SaveState(state);
 
-        var loaded = store.LoadSettings();
-        Assert.Equal(new TimeOnly(6, 50), loaded.TimeIn.RingAt);
-        Assert.Equal("https://hr.example.test/punch", loaded.AttendanceLink);
-        Assert.Equal([DayOfWeek.Saturday], loaded.WorkDays);
-        Assert.Equal(new DateTime(2026, 10, 27, 17, 2, 0), store.LoadState(DateTime.Now).Find(new DateOnly(2026, 10, 27))!.TimeOut.AcknowledgedAt);
+        var loaded = store.LoadSettings().Find("standup0")!;
+        Assert.True(loaded.SameAs(standup.Normalized()));
+        Assert.Equal(new DateTime(2026, 10, 27, 17, 2, 0), store.LoadState(DateTime.Now).Find(new DateOnly(2026, 10, 27))!.Find(Alarm.TimeOutId)!.AcknowledgedAt);
     }
 
     [Fact]
-    public void No_attendance_link_is_built_in_and_a_saved_one_survives()
+    public void A_0_3_settings_and_state_file_loads_into_the_alarm_list()
     {
         var store = new JsonStore(_folder);
+        File.WriteAllText(store.SettingsPath, """
+            { "timeIn": { "enabled": true, "ringAt": "06:50:00", "deadline": "07:00:00" },
+              "timeOut": { "enabled": true, "ringAt": "16:00:00", "deadline": null },
+              "workDays": ["Monday", "Tuesday"], "attendanceLink": "https://hr.example.test/punch",
+              "requireTypedConfirmation": true, "minimumVolumePercent": 25, "syncCode": "" }
+            """);
+        File.WriteAllText(store.StatePath, """
+            { "armedSince": "2026-10-01T00:00:00", "days": [ { "date": "2026-10-27", "dayOff": false,
+              "timeIn": { "acknowledgedAt": "2026-10-27T07:46:00", "snoozedUntil": null, "snoozes": 0 },
+              "timeOut": { "acknowledgedAt": null, "snoozedUntil": null, "snoozes": 1 } } ] }
+            """);
 
-        Assert.Equal("", store.LoadSettings().AttendanceLink);
+        var settings = store.LoadSettings();
+        var state = store.LoadState(DateTime.Now);
 
-        store.SaveSettings(new ShiftbellSettings { AttendanceLink = "https://hr.example.test/punch" });
-        Assert.Equal("https://hr.example.test/punch", store.LoadSettings().AttendanceLink);
+        Assert.Equal(new TimeOnly(6, 50), settings.Find(Alarm.TimeInId)!.RingAt);
+        Assert.Equal("https://hr.example.test/punch", settings.Find(Alarm.TimeOutId)!.Link);
+        Assert.Equal([DayOfWeek.Monday, DayOfWeek.Tuesday], settings.Find(Alarm.TimeOutId)!.Days);
+        Assert.Equal(new DateTime(2026, 10, 27, 7, 46, 0), state.Find(new DateOnly(2026, 10, 27))!.Find(Alarm.TimeInId)!.AcknowledgedAt);
+        Assert.Equal(1, state.Find(new DateOnly(2026, 10, 27))!.Find(Alarm.TimeOutId)!.Snoozes);
+
+        store.SaveSettings(settings);
+        Assert.DoesNotContain("workDays", File.ReadAllText(store.SettingsPath), StringComparison.Ordinal);
+        Assert.DoesNotContain("\"active\"", File.ReadAllText(store.SettingsPath), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void No_attendance_link_is_built_in()
+    {
+        Assert.All(new JsonStore(_folder).LoadSettings().Active, a => Assert.Equal("", a.Link));
     }
 
     [Fact]
@@ -63,7 +85,7 @@ public sealed class JsonStoreTests : IDisposable
 
         var settings = store.LoadSettings();
 
-        Assert.Equal(new TimeOnly(7, 45), settings.TimeIn.RingAt);
+        Assert.Equal(new TimeOnly(7, 45), settings.Find(Alarm.TimeInId)!.RingAt);
         Assert.True(File.Exists(store.SettingsPath + ".corrupt"));
     }
 }

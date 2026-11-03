@@ -61,12 +61,6 @@ internal static class StartupRegistration
         var exe = SecurityElement.Escape(ExePath);
         var today = now.Date;
 
-        var days = new StringBuilder();
-        foreach (var day in settings.WorkDays)
-        {
-            days.Append('<').Append(day).Append(" />");
-        }
-
         var triggers = new StringBuilder();
 
         // Watchdog: relaunch within 15 minutes if the app was closed or crashed.
@@ -78,20 +72,31 @@ internal static class StartupRegistration
             </TimeTrigger>
             """);
 
-        // Wake-from-sleep, two minutes before each ring time, on work days only.
-        if (settings.WorkDays.Count > 0)
+        // Wake-from-sleep, two minutes before each ring time, on the days an alarm at that time rings.
+        // A one-off alarm wakes on every day at its time: a wake that finds nothing due is harmless.
+        foreach (var ring in AlarmPlanner.RingTimes(settings))
         {
-            foreach (var ring in AlarmPlanner.RingTimes(settings))
+            var atThisTime = settings.Active.Where(a => a.Enabled && a.RingAt == ring).ToList();
+            var weekDays = atThisTime.Any(a => a.Date is not null) ? Enum.GetValues<DayOfWeek>() : atThisTime.SelectMany(a => a.Days).Distinct().ToArray();
+            if (weekDays.Length == 0)
             {
-                var wake = today + ring.ToTimeSpan() - WakeLead;
-                triggers.Append(CultureInfo.InvariantCulture, $"""
-                    <CalendarTrigger>
-                      <StartBoundary>{wake:yyyy-MM-ddTHH:mm:ss}</StartBoundary>
-                      <Enabled>true</Enabled>
-                      <ScheduleByWeek><DaysOfWeek>{days}</DaysOfWeek><WeeksInterval>1</WeeksInterval></ScheduleByWeek>
-                    </CalendarTrigger>
-                    """);
+                continue;
             }
+
+            var days = new StringBuilder();
+            foreach (var day in weekDays)
+            {
+                days.Append('<').Append(day).Append(" />");
+            }
+
+            var wake = today + ring.ToTimeSpan() - WakeLead;
+            triggers.Append(CultureInfo.InvariantCulture, $"""
+                <CalendarTrigger>
+                  <StartBoundary>{wake:yyyy-MM-ddTHH:mm:ss}</StartBoundary>
+                  <Enabled>true</Enabled>
+                  <ScheduleByWeek><DaysOfWeek>{days}</DaysOfWeek><WeeksInterval>1</WeeksInterval></ScheduleByWeek>
+                </CalendarTrigger>
+                """);
         }
 
         return $"""
