@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Threading;
 using Microsoft.Win32;
@@ -38,6 +39,7 @@ internal sealed partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        IgnoreTrialSettingsWhenInstalled();
         if (e.Args is ["--render-previews", var folder])
         {
             Previews.Render(folder);
@@ -111,6 +113,21 @@ internal sealed partial class App : Application
         else
         {
             Handle(command);
+        }
+    }
+
+    /// <summary>
+    /// SHIFTBELL_HOME and SHIFTBELL_SYNC_URL are for development builds only. The installed copy drops them, so a
+    /// script or shell that set them can never start the real alarm on test data with sync pointed nowhere
+    /// (which happened on 2026-11-03: the owner's PC ran unpaired on a test folder until it was restarted).
+    /// </summary>
+    private static void IgnoreTrialSettingsWhenInstalled()
+    {
+        var installed = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Shiftbell");
+        if (Path.GetDirectoryName(Environment.ProcessPath) is { } folder && string.Equals(Path.GetFullPath(folder), installed, StringComparison.OrdinalIgnoreCase))
+        {
+            Environment.SetEnvironmentVariable("SHIFTBELL_HOME", null);
+            Environment.SetEnvironmentVariable("SHIFTBELL_SYNC_URL", null);
         }
     }
 
